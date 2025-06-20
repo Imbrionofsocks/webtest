@@ -83,3 +83,4 @@ dmypy.json
 
 *.pyx
 *.pyd
+/screenshots
