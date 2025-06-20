@@ -6,6 +6,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium import webdriver
 import os
 import time
+from enum import Enum
 
 load_dotenv()
 driver_path = os.getenv('DRIVER_PATH')
@@ -14,7 +15,90 @@ screenshot_dir = os.getenv('SCREENSHOTS_DIR')
 
 os.makedirs(screenshot_dir, exist_ok=True)
 
-STAR_RATINGS_TO_CHECK = [3]  # Проверяемые рейтинги
+class TestMode(Enum):
+    SINGLE = 1
+    COMBINED = 2
+    ALL = 3
+    CUSTOM = 4
+
+TEST_CONFIG = {
+    'modes': {
+        TestMode.SINGLE: {
+            'description': 'Проверка каждого фильтра по отдельности',
+            'star_combinations': [[5], [4], [3], [2], [1], [0]]
+        },
+        TestMode.COMBINED: {
+            'description': 'Проверка основных комбинаций',
+            'star_combinations': [
+                [5, 4], 
+                [4, 3], 
+                [3, 2], 
+                [5, 3, 1],
+                [4, 2, 0]
+            ]
+        },
+        TestMode.ALL: {
+            'description': 'Проверка всех возможных комбинаций',
+            'star_combinations': [
+                [5, 4, 3, 2, 1, 0],
+                [5, 4, 3],
+                [4, 3, 2],
+                [3, 2, 1],
+                [2, 1, 0],
+                [5, 3, 1],
+                [4, 2, 0]
+            ]
+        },
+        TestMode.CUSTOM: {
+            'description': 'Свой набор комбинаций',
+            'star_combinations': []
+        }
+    }
+}
+
+def show_menu():
+    """Отображает меню выбора режима тестирования"""
+    print("\n" + "="*50)
+    print("Выберите режим тестирования:")
+    for mode in TestMode:
+        if mode != TestMode.CUSTOM:  # Custom обрабатываем отдельно
+            print(f"{mode.value}. {TEST_CONFIG['modes'][mode]['description']}")
+    print(f"{TestMode.CUSTOM.value}. Задать свои комбинации фильтров")
+    print("0. Выход")
+    
+    while True:
+        try:
+            choice = int(input("Ваш выбор: "))
+            if 0 <= choice <= len(TestMode):
+                return choice
+            print("Пожалуйста, введите число от 0 до", len(TestMode))
+        except ValueError:
+            print("Пожалуйста, введите число")
+
+def get_custom_combinations():
+    """Запрашивает пользовательские комбинации фильтров"""
+    print("\n" + "="*50)
+    print("Введите комбинации звёзд для проверки (например: 5,4 или 3,2,1)")
+    print("Оставьте пустую строку для завершения ввода")
+    
+    combinations = []
+    while True:
+        input_str = input("Комбинация: ").strip()
+        if not input_str:
+            break
+            
+        try:
+            stars = list(map(int, input_str.split(',')))
+            combinations.append(stars)
+            print(f"Добавлена комбинация: {stars}")
+        except:
+            print("Ошибка формата. Используйте числа через запятую (например: 5,4)")
+    
+    if not combinations:
+        print("Не добавлено ни одной комбинации. Будет использован режим по умолчанию")
+        return None
+    
+    return combinations
 
 def setup_driver():
     options = webdriver.ChromeOptions()
@@ -29,89 +113,94 @@ def take_screenshot(driver, filename):
     print(f"Скриншот сохранён: {screenshot_path}")
 
 def wait_for_hotels(driver):
-    """Улучшенное ожидание загрузки отелей"""
     try:
-        # Ждем исчезновения прелоадера (если есть)
-        try:
-            WebDriverWait(driver, 10).until(
-                EC.invisibility_of_element_located((By.CSS_SELECTOR, ".placeholder-preloader--active")))
-        except:
-            pass
-        
-        # Дополнительные проверки для уверенности в загрузке
-        WebDriverWait(driver, 20).until(lambda d: 
-            d.execute_script("""
-                // Проверяем что нет активных AJAX-запросов
-                if (window.jQuery) {
-                    return jQuery.active === 0;
-                }
-                return true;
-            """)
-        )
-        
-        # Ждем появления хотя бы одной карточки отеля
         WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "li.item[itemtype='https://schema.org/Hotel']")))
-        
-        # Дополнительная проверка что карточки видимы
+            EC.invisibility_of_element_located((By.CSS_SELECTOR, ".placeholder-preloader--active")))
         WebDriverWait(driver, 10).until(
-            EC.visibility_of_any_elements_located((By.CSS_SELECTOR, "li.item[itemtype='https://schema.org/Hotel']")))
-        
+            EC.presence_of_element_located((By.CSS_SELECTOR, "li.item[itemtype='https://schema.org/Hotel']")))
         print("Отели успешно загружены")
     except Exception as e:
         print("Ошибка загрузки отелей:", e)
         take_screenshot(driver, "hotels_load_error")
         raise
 
-def apply_star_filter(driver, star_rating):
-    """Применение фильтра по звёздам"""
+def apply_star_filters(driver, star_ratings):
     try:
-        checkbox_xpath = f"//div[@id='ch-hotels-stars']//input[@value='{star_rating}']"
-        checkbox = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.XPATH, checkbox_xpath)))
+        # Снимаем все фильтры звёзд
+        star_checkboxes = driver.find_elements(By.CSS_SELECTOR, "#ch-hotels-stars input[type='checkbox']")
+        for checkbox in star_checkboxes:
+            if checkbox.is_selected():
+                label = checkbox.find_element(By.XPATH, "./following-sibling::span[@class='name']")
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", label)
+                time.sleep(0.2)
+                driver.execute_script("arguments[0].click();", label)
+                time.sleep(0.2)
         
-        label = checkbox.find_element(By.XPATH, "./following-sibling::span[@class='name']")
+        # Применяем нужные фильтры
+        for rating in star_ratings:
+            checkbox_xpath = f"//div[@id='ch-hotels-stars']//input[@value='{rating}']"
+            checkbox = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.XPATH, checkbox_xpath)))
+            
+            label = checkbox.find_element(By.XPATH, "./following-sibling::span[@class='name']")
+            
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", label)
+            time.sleep(0.3)
+            driver.execute_script("arguments[0].click();", label)
+            time.sleep(0.3)
         
-        is_checked = checkbox.is_selected()
-        
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", label)
-        time.sleep(0.5)
-        driver.execute_script("arguments[0].click();", label)
-        
-        WebDriverWait(driver, 10).until(
-            lambda d: checkbox.is_selected() != is_checked)
-        
-        print(f"Фильтр {star_rating} звёзд {'применён' if not is_checked else 'снят'}")
+        print(f"Применены фильтры: {', '.join(map(str, star_ratings))} звёзд")
         wait_for_hotels(driver)
         
     except Exception as e:
-        print(f"Ошибка работы с фильтром {star_rating} звёзд:", e)
-        take_screenshot(driver, f"star_filter_{star_rating}_error")
+        print(f"Ошибка применения фильтров {star_ratings}:", e)
+        take_screenshot(driver, f"filter_apply_error_{'_'.join(map(str, star_ratings))}")
         raise
 
-def check_star_ratings(driver, expected_stars):
-    """Проверка соответствия рейтингов отелей"""
+def check_star_ratings(driver, expected_ratings):
     try:
-        # Дополнительное ожидание перед проверкой
-        time.sleep(1)  # Небольшая пауза для стабилизации
-        
+        time.sleep(1)
         hotels = driver.find_elements(By.CSS_SELECTOR, "li.item[itemtype='https://schema.org/Hotel']")
         wrong_ratings = []
         
         for hotel in hotels:
             try:
-                stars_div = WebDriverWait(hotel, 5).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, ".stars[class*='stars-rating-']")))
+                # Ищем элементы с рейтингом звёзд
+                star_elements = hotel.find_elements(By.CSS_SELECTOR, ".stars[class*='stars-rating-']")
                 
-                star_class = [c for c in stars_div.get_attribute("class").split() 
-                            if c.startswith('stars-rating-')][0]
-                actual_stars = int(star_class.split('-')[-1])
-                
-                if actual_stars != expected_stars:
-                    name = hotel.find_element(By.CSS_SELECTOR, "[itemprop='name']").text.strip()
-                    wrong_ratings.append(f"{name} (ожидалось {expected_stars}, получили {actual_stars})")
+                if 0 in expected_ratings:
+                    # Если в фильтре есть "Без звёзд", возможны два варианта:
+                    # 1. Отель без звёзд (нет элементов рейтинга)
+                    # 2. Отель с рейтингом из разрешенных в фильтре
+                    if star_elements:
+                        star_class = [c for c in star_elements[0].get_attribute("class").split() 
+                                    if c.startswith('stars-rating-')][0]
+                        actual_stars = int(star_class.split('-')[-1])
+                        
+                        # Проверяем, что рейтинг есть в ожидаемых (кроме 0)
+                        if actual_stars not in [x for x in expected_ratings if x != 0]:
+                            name = hotel.find_element(By.CSS_SELECTOR, "[itemprop='name']").text.strip()
+                            expected_str = "Без звёзд или " + ', '.join(map(str, [x for x in expected_ratings if x != 0]))
+                            wrong_ratings.append(f"{name} (допустимы: {expected_str}, получили: {actual_stars})")
+                else:
+                    # Если фильтр не содержит "Без звёзд", проверяем обязательное наличие рейтинга
+                    if not star_elements:
+                        name = hotel.find_element(By.CSS_SELECTOR, "[itemprop='name']").text.strip()
+                        wrong_ratings.append(f"{name} (не найден рейтинг звёзд)")
+                        continue
+                        
+                    star_class = [c for c in star_elements[0].get_attribute("class").split() 
+                                if c.startswith('stars-rating-')][0]
+                    actual_stars = int(star_class.split('-')[-1])
+                    
+                    if actual_stars not in expected_ratings:
+                        name = hotel.find_element(By.CSS_SELECTOR, "[itemprop='name']").text.strip()
+                        wrong_ratings.append(f"{name} (допустимы: {', '.join(map(str, expected_ratings))}, получили: {actual_stars})")
+                        
             except Exception as e:
                 print(f"Ошибка при проверке отеля: {e}")
+                name = hotel.find_element(By.CSS_SELECTOR, "[itemprop='name']").text.strip()
+                wrong_ratings.append(f"{name} (ошибка проверки)")
                 continue
         
         if wrong_ratings:
@@ -121,13 +210,23 @@ def check_star_ratings(driver, expected_stars):
             if len(wrong_ratings) > 3:
                 print(f" - и ещё {len(wrong_ratings)-3} отелей...")
             
-            take_screenshot(driver, f"wrong_stars_{expected_stars}")
-            raise AssertionError(f"Найдены отели с несоответствующим рейтингом ({expected_stars} звёзд)")
+            take_screenshot(driver, f"wrong_stars_{'_'.join(map(str, expected_ratings))}")
+            raise AssertionError(f"Найдены отели с недопустимым рейтингом ({expected_ratings} звёзд)")
         
         if len(hotels) == 0:
             raise AssertionError("После фильтрации не найдено ни одного отеля")
             
-        print(f"✓ Все {len(hotels)} отелей соответствуют {expected_stars} звёздам")
+        # Формируем читаемое описание фильтра
+        if 0 in expected_ratings:
+            other_ratings = [x for x in expected_ratings if x != 0]
+            if other_ratings:
+                expected_str = f"Без звёзд или {', '.join(map(str, other_ratings))}"
+            else:
+                expected_str = "Без звёзд"
+        else:
+            expected_str = ', '.join(map(str, expected_ratings))
+            
+        print(f"✓ Все {len(hotels)} отелей соответствуют фильтру ({expected_str})")
         return len(hotels)
         
     except Exception as e:
@@ -135,20 +234,17 @@ def check_star_ratings(driver, expected_stars):
         take_screenshot(driver, "rating_check_error")
         raise
 
-def process_pagination(driver, expected_stars):
-    """Обработка пагинации с учетом всех возможных состояний"""
+
+def process_pagination(driver, expected_ratings):
     total_hotels = 0
     processed_pages = 0
     
     while True:
-        # Проверяем отели на текущей странице
-        hotels_count = check_star_ratings(driver, expected_stars)
+        hotels_count = check_star_ratings(driver, expected_ratings)
         total_hotels += hotels_count
         processed_pages += 1
         
-        # Проверяем состояние пагинации
         try:
-            # Ищем кнопку "Далее" в любом состоянии
             next_buttons = driver.find_elements(By.CSS_SELECTOR, ".pagination .next")
             
             if not next_buttons:
@@ -157,61 +253,74 @@ def process_pagination(driver, expected_stars):
                 
             next_button = next_buttons[0]
             
-            # Проверяем два варианта неактивной кнопки "Далее"
             if ("disabled" in next_button.get_attribute("class") or 
                 "current" in next_button.get_attribute("class")):
-                print("\nДостигнут конец пагинации (неактивная кнопка 'Далее')")
+                print("\nДостигнут конец пагинации")
                 break
                 
             print(f"\nПереходим на страницу {processed_pages + 1}...")
-            
-            # Прокручиваем и кликаем с использованием JavaScript
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_button)
+            driver.execute_script("arguments[0].scrollIntoView();", next_button)
             time.sleep(0.3)
             driver.execute_script("arguments[0].click();", next_button)
-            
-            # Ждем полной загрузки новой страницы
             wait_for_hotels(driver)
-            time.sleep(1)  # Дополнительная пауза для стабилизации
+            time.sleep(1)
             
         except Exception as e:
-            print(f"Ошибка при обработке пагинации: {e}")
+            print(f"Ошибка пагинации: {e}")
             take_screenshot(driver, "pagination_error")
             break
     
     print(f"\nИтого проверено: {processed_pages} страниц, {total_hotels} отелей")
     return total_hotels
 
-def test_star_filter(driver, star_rating):
-    """Полный тест для одного фильтра"""
-    print(f"\n=== Начинаем тестирование фильтра {star_rating} звёзд ===")
+def run_test_mode(driver, mode, custom_combinations=None):
+    print(f"\n=== Режим тестирования: {TEST_CONFIG['modes'][mode]['description']} ===")
     
-    # Применяем фильтр
-    apply_star_filter(driver, star_rating)
+    combinations = custom_combinations if mode == TestMode.CUSTOM else TEST_CONFIG['modes'][mode]['star_combinations']
     
-    # Проверяем все страницы пагинации
-    try:
-        total_hotels = process_pagination(driver, star_rating)
+    for combination in combinations:
+        print(f"\nТестируем комбинацию: {combination} звёзд")
         
-        if total_hotels == 0:
-            raise AssertionError(f"После фильтрации {star_rating} звёзд не найдено ни одного отеля")
-        
-    finally:
-        # Всегда снимаем фильтр, даже если были ошибки
-        print("\nСнимаем фильтр...")
-        apply_star_filter(driver, star_rating)
-        time.sleep(1)
+        try:
+            apply_star_filters(driver, combination)
+            total_hotels = process_pagination(driver, combination)
+            
+            if total_hotels == 0:
+                print(f"Предупреждение: для комбинации {combination} не найдено отелей")
+            
+        finally:
+            print("\nСнимаем фильтры...")
+            star_checkboxes = driver.find_elements(By.CSS_SELECTOR, "#ch-hotels-stars input[type='checkbox']:checked")
+            for checkbox in star_checkboxes:
+                label = checkbox.find_element(By.XPATH, "./following-sibling::span[@class='name']")
+                driver.execute_script("arguments[0].click();", label)
+            time.sleep(1)
 
 def main():
     driver = None
     try:
+        # Выбор режима тестирования
+        choice = show_menu()
+        if choice == 0:
+            print("Выход из программы")
+            return
+            
+        selected_mode = TestMode(choice)
+        
+        # Обработка custom режима
+        custom_combinations = None
+        if selected_mode == TestMode.CUSTOM:
+            custom_combinations = get_custom_combinations()
+            if not custom_combinations:
+                selected_mode = TestMode.SINGLE  # Fallback на режим по умолчанию
+        
+        # Запуск тестов
         driver = setup_driver()
         driver.get(url)
         time.sleep(2)
         wait_for_hotels(driver)
         
-        for stars in STAR_RATINGS_TO_CHECK:
-            test_star_filter(driver, stars)
+        run_test_mode(driver, selected_mode, custom_combinations)
         
         print("\nВсе тесты успешно пройдены!")
         
