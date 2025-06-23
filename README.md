@@ -30,6 +30,6 @@
 ## Настройка .env
 
 Создайте файл .env со следующим содержимым:
-DRIVER_PATH=путь/к/chromedriver
-TEST_URL=URL_тестируемого_сайта
-SCREENSHOTS_DIR=путь/к/папке/со/скриншотами
+- DRIVER_PATH=путь/к/chromedriver
+- TEST_URL=URL_тестируемого_сайта
+- SCREENSHOTS_DIR=путь/к/папке/со/скриншотами
